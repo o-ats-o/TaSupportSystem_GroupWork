@@ -63,7 +63,7 @@ wf.close()
 
 # ノイズ除去
 fs, data = wavfile.read(WAVE_OUTPUT_FILENAME)
-lowcut = 1000.0
+lowcut = 600
 highcut = 3000.0
 y = butter_bandpass_filter(data, lowcut, highcut, fs, order=6)
 # ノイズ除去後の音声ファイルを保存
@@ -77,7 +77,7 @@ MIMETYPE = "audio/wav"
 # 音声ファイルをダウンロードフォルダに移動
 def move_file():
     source = FILE
-    destination = "/Users/ats/Music/talk_record"
+    destination = FOLDER_PATH
     
     # 移動先のディレクトリで同じ名前のファイルが存在する場合、ファイル名を変更
     if os.path.exists(os.path.join(destination, os.path.basename(FILE))):
@@ -120,21 +120,19 @@ async def main():
         "model": "nova-2", 
         "language": "ja", 
         "smart_format": True, 
-        "punctuate": True,
+        "punctuate": True, 
+        "utterances": False, 
         "diarize": True, 
       }
     )
   )
 
   # Write the response to the console
+  # Write only the transcript to the console
   #print(json.dumps(response, indent=4))
 
-  # Write only the transcript to the console
   transcript = response["results"]["channels"][0]["alternatives"][0]["paragraphs"]["transcript"]
-
-
   speakerall = transcript.count("Speaker")
-
 
   print(transcript)
   print(f"発話量：" + str(speakerall) + "回")
