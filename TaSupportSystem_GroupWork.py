@@ -8,7 +8,6 @@ import os
 import numpy as np
 from scipy.io import wavfile
 from scipy.signal import butter, lfilter
-
 from local_settings import *
 
 # 録音のパラメータ設定
@@ -63,8 +62,8 @@ wf.close()
 
 # ノイズ除去
 fs, data = wavfile.read(WAVE_OUTPUT_FILENAME)
-lowcut = 600
-highcut = 3000.0
+lowcut = 200
+highcut = 4000.0
 y = butter_bandpass_filter(data, lowcut, highcut, fs, order=6)
 # ノイズ除去後の音声ファイルを保存
 wavfile.write(WAVE_OUTPUT_FILENAME, fs, y.astype(np.int16))
@@ -126,18 +125,19 @@ async def main():
       }
     )
   )
+  
+  # Move the file to the talk_record folder
+  move_file()
 
   # Write the response to the console
   # Write only the transcript to the console
-  #print(json.dumps(response, indent=4))
+  print(json.dumps(response, indent=4))
 
   transcript = response["results"]["channels"][0]["alternatives"][0]["paragraphs"]["transcript"]
   speakerall = transcript.count("Speaker")
 
   print(transcript)
   print(f"発話量：" + str(speakerall) + "回")
-  
-  move_file()
 
 
 try:
