@@ -9,6 +9,7 @@ import numpy as np
 from scipy.io import wavfile
 from scipy.signal import butter, lfilter
 from local_settings import *
+from google.cloud import language_v1
 
 # 録音のパラメータ設定
 FORMAT = pyaudio.paInt16 # 音声のフォーマット
@@ -17,8 +18,6 @@ RATE = 44100             # サンプルレート
 CHUNK = 1024             # データの読み込みサイズ
 RECORD_SECONDS = 30      # 録音時間
 WAVE_OUTPUT_FILENAME = "output.wav" # 出力ファイル名
-
-audio = pyaudio.PyAudio()
 
 # バターワースフィルタ
 def butter_bandpass(lowcut, highcut, fs, order=5):
@@ -33,36 +32,43 @@ def butter_bandpass_filter(data, lowcut, highcut, fs, order=5):
     y = lfilter(b, a, data)
     return y
 
-# 録音開始
-stream = audio.open(format=FORMAT, channels=CHANNELS,
-                    rate=RATE, input=True,
-                    frames_per_buffer=CHUNK)
-print("録音を開始します。")
+def record_audio(filename, record_seconds):
+    audio = pyaudio.PyAudio()
 
-frames = []
+    # 録音設定
+    stream = audio.open(format=FORMAT, channels=CHANNELS,
+                        rate=RATE, input=True,
+                        frames_per_buffer=CHUNK)
+    print("録音開始")
 
-for i in range(0, int(RATE / CHUNK * RECORD_SECONDS)):
-    data = stream.read(CHUNK)
-    frames.append(data)
+    frames = []
 
-print("録音が終了しました。")
+    # 録音
+    for i in range(0, int(RATE / CHUNK * record_seconds)):
+        data = stream.read(CHUNK)
+        frames.append(data)
 
-# 録音終了
-stream.stop_stream()
-stream.close()
-audio.terminate()
+    print("録音終了")
 
-# ファイルに保存
-wf = wave.open(WAVE_OUTPUT_FILENAME, 'wb')
-wf.setnchannels(CHANNELS)
-wf.setsampwidth(audio.get_sample_size(FORMAT))
-wf.setframerate(RATE)
-wf.writeframes(b''.join(frames))
-wf.close()
+    # 録音終了処理
+    stream.stop_stream()
+    stream.close()
+    audio.terminate()
+
+    # ファイルに保存
+    waveFile = wave.open(filename, 'wb')
+    waveFile.setnchannels(CHANNELS)
+    waveFile.setsampwidth(audio.get_sample_size(FORMAT))
+    waveFile.setframerate(RATE)
+    waveFile.writeframes(b''.join(frames))
+    waveFile.close()
+
+# 録音を開始
+record_audio(WAVE_OUTPUT_FILENAME, RECORD_SECONDS)
 
 # ノイズ除去
 fs, data = wavfile.read(WAVE_OUTPUT_FILENAME)
-lowcut = 200
+lowcut = 100.0
 highcut = 4000.0
 y = butter_bandpass_filter(data, lowcut, highcut, fs, order=6)
 # ノイズ除去後の音声ファイルを保存
@@ -70,7 +76,6 @@ wavfile.write(WAVE_OUTPUT_FILENAME, fs, y.astype(np.int16))
 
 # ノイズ除去後の音声ファイルをFILEに代入
 FILE = WAVE_OUTPUT_FILENAME
-
 MIMETYPE = "audio/wav"
 
 # 音声ファイルをダウンロードフォルダに移動
@@ -87,6 +92,22 @@ def move_file():
         destination = os.path.join(destination, f"{base}_{i}{ext}")
    
     shutil.move(source, destination)
+    
+def analyze_sentiment(text_content):
+  
+    client = language_v1.LanguageServiceClient()
+    
+    type_ = language_v1.Document.Type.PLAIN_TEXT
+    
+    language = "ja"
+    document = {"content": text_content, "type_": type_, "language": language}
+
+    # Available values: NONE, UTF8, UTF16, UTF32
+    encoding_type = language_v1.EncodingType.UTF8
+
+    response = client.analyze_sentiment(request = {'document': document, 'encoding_type': encoding_type})
+
+    print(u"感情値: {}".format(response.document_sentiment.score))
 
 async def main():
 
@@ -129,15 +150,14 @@ async def main():
   # Move the file to the talk_record folder
   move_file()
 
-  # Write the response to the console
-  # Write only the transcript to the console
-  print(json.dumps(response, indent=4))
+  transcript = response["results"]["channels"][0]["alternatives"][0]["transcript"]
+  transcript_diarize = response["results"]["channels"][0]["alternatives"][0]["paragraphs"]["transcript"]
+  speakerall = transcript_diarize.count("Speaker")
 
-  transcript = response["results"]["channels"][0]["alternatives"][0]["paragraphs"]["transcript"]
-  speakerall = transcript.count("Speaker")
-
-  print(transcript)
-  print(f"発話量：" + str(speakerall) + "回")
+  print(transcript_diarize)
+  print(f"発話回数：" + str(speakerall) + "回")
+  
+  analyze_sentiment(transcript)
 
 
 try:
