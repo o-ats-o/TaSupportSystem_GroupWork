@@ -74,7 +74,6 @@ y = butter_bandpass_filter(data, lowcut, highcut, fs, order=6)
 # ノイズ除去後の音声ファイルを保存
 wavfile.write(WAVE_OUTPUT_FILENAME, fs, y.astype(np.int16))
 
-# ノイズ除去後の音声ファイルをFILEに代入
 FILE = WAVE_OUTPUT_FILENAME
 MIMETYPE = "audio/wav"
 
@@ -92,7 +91,8 @@ def move_file():
         destination = os.path.join(destination, f"{base}_{i}{ext}")
    
     shutil.move(source, destination)
-    
+
+# テキストの感情分析
 def analyze_sentiment(text_content):
   
     client = language_v1.LanguageServiceClient()
@@ -107,32 +107,26 @@ def analyze_sentiment(text_content):
 
     response = client.analyze_sentiment(request = {'document': document, 'encoding_type': encoding_type})
 
-    print(u"感情値: {}".format(response.document_sentiment.score))
+    return response.document_sentiment.score
 
 async def main():
 
-  # Initialize the Deepgram SDK
   deepgram = Deepgram(DEEPGRAM_API_KEY)
 
-  # Check whether requested file is local or remote, and prepare source
   if FILE.startswith('http'):
-    # file is remote
-    # Set the source
+    # リモートファイル
     source = {
       'url': FILE
     }
   else:
-    # file is local
-    # Open the audio file
+    # ローカルファイル
     audio = open(FILE, 'rb')
 
-    # Set the source
     source = {
       'buffer': audio,
       'mimetype': MIMETYPE
     }
 
-  # Send the audio to Deepgram and get the response
   response = await asyncio.create_task(
     deepgram.transcription.prerecorded(
       source,
@@ -147,22 +141,19 @@ async def main():
     )
   )
   
-  # Move the file to the talk_record folder
   move_file()
 
   transcript = response["results"]["channels"][0]["alternatives"][0]["transcript"]
   transcript_diarize = response["results"]["channels"][0]["alternatives"][0]["paragraphs"]["transcript"]
   speakerall = transcript_diarize.count("Speaker")
-
+  sentimental = analyze_sentiment(transcript)
+  
   print(transcript_diarize)
   print(f"発話回数：" + str(speakerall) + "回")
-  
-  analyze_sentiment(transcript)
+  print(f"感情スコア: {sentimental}")
 
 
 try:
-  # If running in a Jupyter notebook, Jupyter is already running an event loop, so run main with this line instead:
-  #await main()
   asyncio.run(main())
 except Exception as e:
   exception_type, exception_object, exception_traceback = sys.exc_info()
