@@ -147,13 +147,13 @@ async def main():
 
   transcript = response["results"]["channels"][0]["alternatives"][0]["transcript"]
   transcript_diarize = response["results"]["channels"][0]["alternatives"][0]["paragraphs"]["transcript"]
-  speakerall = transcript_diarize.count("Speaker")
-  sentimental = analyze_sentiment(transcript)
+  utterance_count = transcript_diarize.count("Speaker")
+  sentiment_value = analyze_sentiment(transcript)
   
   print(GROUP_ID)
   print(transcript_diarize)
-  print(f"発話回数：" + str(speakerall) + "回")
-  print(f"感情スコア: {sentimental}")
+  print(f"発話回数: {utterance_count}")
+  print(f"感情スコア: {sentiment_value}")
 
 
 try:

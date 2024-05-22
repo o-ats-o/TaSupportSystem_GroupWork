@@ -4,8 +4,8 @@ from django.db import models
 
 class Data(models.Model):
     group_id = models.CharField(max_length=10)
-    text_result = models.TextField()
-    speaker_text_result = models.TextField()
+    transcript = models.TextField()
+    transcript_diarize = models.TextField()
     utterance_count = models.IntegerField()
     sentiment_value = models.FloatField()
 
