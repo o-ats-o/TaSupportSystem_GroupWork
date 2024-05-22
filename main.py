@@ -10,6 +10,7 @@ from scipy.io import wavfile
 from scipy.signal import butter, lfilter
 from local_settings import *
 from google.cloud import language_v1
+import requests
 
 GROUP_ID = "group_0"
 
@@ -154,6 +155,19 @@ async def main():
   print(transcript_diarize)
   print(f"発話回数: {utterance_count}")
   print(f"感情スコア: {sentiment_value}")
+  
+  # データをPOSTリクエストで送信
+  data = {
+        'group_id': GROUP_ID,
+        'transcript': transcript,
+        'transcript_diarize': transcript_diarize,
+        'utterance_count': utterance_count,
+        'sentiment_value': sentiment_value
+      }
+    
+  response = requests.post(DJANGO_API_URL, json=data)
+  print(response.status_code)
+  print(response.json())
 
 
 try:
