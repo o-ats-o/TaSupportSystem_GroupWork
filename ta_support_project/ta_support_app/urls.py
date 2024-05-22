@@ -1,6 +1,10 @@
-from django.urls import path
-from .views import DataListCreate
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import DataViewSet
+
+router = DefaultRouter()
+router.register(r'data', DataViewSet)
 
 urlpatterns = [
-    path('data/', DataListCreate.as_view(), name='data-list-create'),
+    path('', include(router.urls)),
 ]
