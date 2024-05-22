@@ -11,6 +11,8 @@ from scipy.signal import butter, lfilter
 from local_settings import *
 from google.cloud import language_v1
 
+GROUP_ID = "group_0"
+
 # 録音のパラメータ設定
 FORMAT = pyaudio.paInt16 # 音声のフォーマット
 CHANNELS = 1             # モノラル
@@ -148,6 +150,7 @@ async def main():
   speakerall = transcript_diarize.count("Speaker")
   sentimental = analyze_sentiment(transcript)
   
+  print(GROUP_ID)
   print(transcript_diarize)
   print(f"発話回数：" + str(speakerall) + "回")
   print(f"感情スコア: {sentimental}")
