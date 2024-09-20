@@ -17,7 +17,7 @@ class DataViewSet(viewsets.ModelViewSet):
         queryset = self.filter_queryset(self.get_queryset())
 
         if not queryset.exists():
-            return Response({"Error": "その時間帯のデータは存在しません"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"Error": "一致する検索結果がありません"}, status=status.HTTP_404_NOT_FOUND)
 
         page = self.paginate_queryset(queryset)
         if page is not None:
