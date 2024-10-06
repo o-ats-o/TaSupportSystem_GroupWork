@@ -1,2 +1,5 @@
 local_settings.py
-DS_Store
+.DS_Store
+__pycache__
+ta_support_project/ta_support_project/settings.py
+getData.py
