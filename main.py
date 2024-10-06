@@ -17,6 +17,7 @@ FORMAT = pyaudio.paInt16 # 音声のフォーマット
 CHANNELS = 1             # モノラル
 RATE = 44100             # サンプルレート
 CHUNK = 1024             # データの読み込みサイズ
+# TODO: テスト用に録音時間を10秒に設定
 RECORD_SECONDS = 10      # 録音時間
 WAVE_OUTPUT_FILENAME = "output.wav" # 出力ファイル名
 
