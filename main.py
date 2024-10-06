@@ -12,14 +12,12 @@ from local_settings import *
 from google.cloud import language_v1
 import requests
 
-GROUP_ID = "group_0"
-
 # 録音のパラメータ設定
 FORMAT = pyaudio.paInt16 # 音声のフォーマット
 CHANNELS = 1             # モノラル
 RATE = 44100             # サンプルレート
 CHUNK = 1024             # データの読み込みサイズ
-RECORD_SECONDS = 30      # 録音時間
+RECORD_SECONDS = 10      # 録音時間
 WAVE_OUTPUT_FILENAME = "output.wav" # 出力ファイル名
 
 # バターワースフィルタ
@@ -112,24 +110,21 @@ def analyze_sentiment(text_content):
 
     return response.document_sentiment.score
 
+# データをPOSTリクエストで送信
+def send_post_request(data):
+    response = requests.post(DJANGO_API_URL, json=data)
+    print(response.status_code)
+    print(response.json())
+    if response.status_code == 400:
+        data['transcript'] = None
+        data['transcript_diarize'] = None
+        response = requests.post(DJANGO_API_URL, json=data)
+    return response
+
 async def main():
 
   deepgram = Deepgram(DEEPGRAM_API_KEY)
-
-  if FILE.startswith('http'):
-    # リモートファイル
-    source = {
-      'url': FILE
-    }
-  else:
-    # ローカルファイル
-    audio = open(FILE, 'rb')
-
-    source = {
-      'buffer': audio,
-      'mimetype': MIMETYPE
-    }
-
+  source = {'url': FILE} if FILE.startswith('http') else {'buffer': open(FILE, 'rb'), 'mimetype': MIMETYPE}
   response = await asyncio.create_task(
     deepgram.transcription.prerecorded(
       source,
@@ -156,7 +151,6 @@ async def main():
   print(f"発話回数: {utterance_count}")
   print(f"感情スコア: {sentiment_value}")
   
-  # データをPOSTリクエストで送信
   data = {
         'group_id': GROUP_ID,
         'transcript': transcript,
@@ -164,11 +158,7 @@ async def main():
         'utterance_count': utterance_count,
         'sentiment_value': sentiment_value
       }
-    
-  response = requests.post(DJANGO_API_URL, json=data)
-  print(response.status_code)
-  print(response.json())
-
+  send_post_request(data)
 
 try:
   asyncio.run(main())
