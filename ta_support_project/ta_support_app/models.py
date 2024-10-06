@@ -4,8 +4,8 @@ from django.db import models
 
 class Data(models.Model):
     group_id = models.CharField(max_length=10)
-    transcript = models.TextField()
-    transcript_diarize = models.TextField()
+    transcript = models.TextField(null=True)
+    transcript_diarize = models.TextField(null=True)
     utterance_count = models.IntegerField()
     sentiment_value = models.FloatField()
     datetime = models.DateTimeField(auto_now_add=True)
