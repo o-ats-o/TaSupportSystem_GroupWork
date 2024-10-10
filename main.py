@@ -47,7 +47,7 @@ def record_audio(filename, record_seconds):
 
     # 録音
     for i in range(0, int(RATE / CHUNK * record_seconds)):
-        data = stream.read(CHUNK)
+        data = stream.read(CHUNK, exception_on_overflow=False)
         frames.append(data)
 
     print("録音終了")
@@ -113,13 +113,13 @@ def analyze_sentiment(text_content):
 
 # データをPOSTリクエストで送信
 def send_post_request(data):
-    response = requests.post(DJANGO_API_URL, json=data)
+    response = requests.post(DJANGO_API_URL, json=data, timeout=240)
     print(response.status_code)
     print(response.json())
     if response.status_code == 400:
         data['transcript'] = None
         data['transcript_diarize'] = None
-        response = requests.post(DJANGO_API_URL, json=data)
+        response = requests.post(DJANGO_API_URL, json=data, timeout=240)
     return response
 
 async def main():
