@@ -13,6 +13,8 @@ from google.cloud import language_v1
 import requests
 import logging
 import time
+import threading
+import queue
 
 # ログの設定
 logging.basicConfig(
@@ -207,12 +209,27 @@ def send_post_request(data):
     except Exception as e:
         logging.error(f"データ送信エラー: {e}")
 
-async def main():
-  move_file()
+def main():
+    q = queue.Queue()
 
-try:
-  asyncio.run(main())
-except Exception as e:
-  exception_type, exception_object, exception_traceback = sys.exc_info()
-  line_number = exception_traceback.tb_lineno
-  print(f'line {line_number}: {exception_type} - {e}')
+    # 録音スレッドを作成
+    record_thread = threading.Thread(target=record_audio, args=(q, RECORD_SECONDS))
+    record_thread.daemon = True
+    record_thread.start()
+
+    # データ処理スレッドを作成
+    process_thread = threading.Thread(target=process_data, args=(q,))
+    process_thread.daemon = True
+    process_thread.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logging.info("プログラムを終了します")
+        q.put(None)
+        record_thread.join()
+        process_thread.join()
+
+if __name__ == "__main__":
+    main()
