@@ -196,14 +196,16 @@ def analyze_sentiment(text_content):
 
 # データをPOSTリクエストで送信
 def send_post_request(data):
-    response = requests.post(DJANGO_API_URL, json=data, timeout=240)
-    print(response.status_code)
-    print(response.json())
-    if response.status_code == 400:
-        data['transcript'] = None
-        data['transcript_diarize'] = None
+    try:
         response = requests.post(DJANGO_API_URL, json=data, timeout=240)
-    return response
+        logging.info(f"データ送信ステータスコード: {response.status_code}")
+        logging.info(f"サーバからの応答: {response.json()}")
+        if response.status_code == 400:
+            data['transcript'] = None
+            data['transcript_diarize'] = None
+            response = requests.post(DJANGO_API_URL, json=data, timeout=240)
+    except Exception as e:
+        logging.error(f"データ送信エラー: {e}")
 
 async def main():
   move_file()
