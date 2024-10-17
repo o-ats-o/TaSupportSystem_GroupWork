@@ -12,6 +12,7 @@ from local_settings import *
 from google.cloud import language_v1
 import requests
 import logging
+import time
 
 # ログの設定
 logging.basicConfig(
@@ -28,9 +29,7 @@ FORMAT = pyaudio.paInt16 # 音声のフォーマット
 CHANNELS = 1             # モノラル
 RATE = 44100             # サンプルレート
 CHUNK = 1024             # データの読み込みサイズ
-# TODO: テスト用に録音時間を10秒に設定
-RECORD_SECONDS = 10      # 録音時間
-WAVE_OUTPUT_FILENAME = "output.wav" # 出力ファイル名
+RECORD_SECONDS = 299     # 録音時間
 
 # バターワースフィルタ
 def butter_bandpass(lowcut, highcut, fs, order=5):
@@ -45,36 +44,45 @@ def butter_bandpass_filter(data, lowcut, highcut, fs, order=5):
     y = lfilter(b, a, data)
     return y
 
-def record_audio(filename, record_seconds):
-    audio = pyaudio.PyAudio()
+# 録音関数
+def record_audio(q, record_seconds):
+    while True:
+        audio = pyaudio.PyAudio()
 
-    # 録音設定
-    stream = audio.open(format=FORMAT, channels=CHANNELS,
-                        rate=RATE, input=True,
-                        frames_per_buffer=CHUNK)
-    print("録音開始")
+        # 録音設定
+        stream = audio.open(format=FORMAT, channels=CHANNELS,
+                            rate=RATE, input=True,
+                            frames_per_buffer=CHUNK)
+        logging.info("録音開始")
 
-    frames = []
+        frames = []
 
-    # 録音
-    for i in range(0, int(RATE / CHUNK * record_seconds)):
-        data = stream.read(CHUNK, exception_on_overflow=False)
-        frames.append(data)
+        # 録音
+        for i in range(0, int(RATE / CHUNK * record_seconds)):
+            data = stream.read(CHUNK, exception_on_overflow=False)
+            frames.append(data)
 
-    print("録音終了")
+        logging.info("録音終了")
 
-    # 録音終了処理
-    stream.stop_stream()
-    stream.close()
-    audio.terminate()
+        # 録音終了処理
+        stream.stop_stream()
+        stream.close()
+        audio.terminate()
 
-    # ファイルに保存
-    waveFile = wave.open(filename, 'wb')
-    waveFile.setnchannels(CHANNELS)
-    waveFile.setsampwidth(audio.get_sample_size(FORMAT))
-    waveFile.setframerate(RATE)
-    waveFile.writeframes(b''.join(frames))
-    waveFile.close()
+        # ファイルに保存
+        filename = f"output_{int(time.time())}.wav"
+        waveFile = wave.open(filename, 'wb')
+        waveFile.setnchannels(CHANNELS)
+        waveFile.setsampwidth(audio.get_sample_size(FORMAT))
+        waveFile.setframerate(RATE)
+        waveFile.writeframes(b''.join(frames))
+        waveFile.close()
+
+        # キューにファイル名を追加
+        q.put(filename)
+
+        # 次の録音開始までの待機時間を調整（録音時間299秒 + 待機1秒 = 5分間隔）
+        time.sleep(1)
 
 # 録音を開始
 record_audio(WAVE_OUTPUT_FILENAME, RECORD_SECONDS)
