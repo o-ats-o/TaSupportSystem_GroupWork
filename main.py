@@ -11,15 +11,27 @@ from scipy.signal import butter, lfilter
 from local_settings import *
 from google.cloud import language_v1
 import requests
+import logging
+import time
+import threading
+import queue
+
+# ログの設定
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler("processing.log"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 
 # 録音のパラメータ設定
 FORMAT = pyaudio.paInt16 # 音声のフォーマット
 CHANNELS = 1             # モノラル
 RATE = 44100             # サンプルレート
 CHUNK = 1024             # データの読み込みサイズ
-# TODO: テスト用に録音時間を10秒に設定
-RECORD_SECONDS = 10      # 録音時間
-WAVE_OUTPUT_FILENAME = "output.wav" # 出力ファイル名
+RECORD_SECONDS = 299     # 録音時間
 
 # バターワースフィルタ
 def butter_bandpass(lowcut, highcut, fs, order=5):
@@ -34,65 +46,138 @@ def butter_bandpass_filter(data, lowcut, highcut, fs, order=5):
     y = lfilter(b, a, data)
     return y
 
-def record_audio(filename, record_seconds):
-    audio = pyaudio.PyAudio()
+# 録音関数
+def record_audio(q, record_seconds):
+    while True:
+        audio = pyaudio.PyAudio()
 
-    # 録音設定
-    stream = audio.open(format=FORMAT, channels=CHANNELS,
-                        rate=RATE, input=True,
-                        frames_per_buffer=CHUNK)
-    print("録音開始")
+        # 録音設定
+        stream = audio.open(format=FORMAT, channels=CHANNELS,
+                            rate=RATE, input=True,
+                            frames_per_buffer=CHUNK)
+        logging.info("録音開始")
 
-    frames = []
+        frames = []
 
-    # 録音
-    for i in range(0, int(RATE / CHUNK * record_seconds)):
-        data = stream.read(CHUNK, exception_on_overflow=False)
-        frames.append(data)
+        # 録音
+        for i in range(0, int(RATE / CHUNK * record_seconds)):
+            data = stream.read(CHUNK, exception_on_overflow=False)
+            frames.append(data)
 
-    print("録音終了")
+        logging.info("録音終了")
 
-    # 録音終了処理
-    stream.stop_stream()
-    stream.close()
-    audio.terminate()
+        # 録音終了処理
+        stream.stop_stream()
+        stream.close()
+        audio.terminate()
 
-    # ファイルに保存
-    waveFile = wave.open(filename, 'wb')
-    waveFile.setnchannels(CHANNELS)
-    waveFile.setsampwidth(audio.get_sample_size(FORMAT))
-    waveFile.setframerate(RATE)
-    waveFile.writeframes(b''.join(frames))
-    waveFile.close()
+        # ファイルに保存
+        filename = f"output_{int(time.time())}.wav"
+        waveFile = wave.open(filename, 'wb')
+        waveFile.setnchannels(CHANNELS)
+        waveFile.setsampwidth(audio.get_sample_size(FORMAT))
+        waveFile.setframerate(RATE)
+        waveFile.writeframes(b''.join(frames))
+        waveFile.close()
 
-# 録音を開始
-record_audio(WAVE_OUTPUT_FILENAME, RECORD_SECONDS)
+        # キューにファイル名を追加
+        q.put(filename)
 
-# ノイズ除去
-fs, data = wavfile.read(WAVE_OUTPUT_FILENAME)
-lowcut = 100.0
-highcut = 4000.0
-y = butter_bandpass_filter(data, lowcut, highcut, fs, order=6)
-# ノイズ除去後の音声ファイルを保存
-wavfile.write(WAVE_OUTPUT_FILENAME, fs, y.astype(np.int16))
+        # 次の録音開始までの待機時間を調整（録音時間299秒 + 待機1秒 = 5分間隔）
+        time.sleep(1)
 
-FILE = WAVE_OUTPUT_FILENAME
-MIMETYPE = "audio/wav"
+# データ処理関数
+def process_data(q):
+    while True:
+        filename = q.get()  # キューからファイル名を取得
 
-# 音声ファイルをダウンロードフォルダに移動
-def move_file():
+        if filename is None:
+            break
+
+        start_time = time.time()
+        logging.info(f"{filename} のデータ処理を開始")
+
+        try:
+            # ノイズ除去
+            fs, data = wavfile.read(filename)
+            lowcut = 100.0
+            highcut = 4000.0
+            y = butter_bandpass_filter(data, lowcut, highcut, fs, order=6)
+            # ノイズ除去後の音声ファイルを保存
+            wavfile.write(filename, fs, y.astype(np.int16))
+
+            FILE = filename
+            MIMETYPE = "audio/wav"
+
+            # 音声認識とデータ送信
+            asyncio.run(process_audio(FILE, MIMETYPE))
+
+            # ファイルを移動
+            move_file(filename)
+
+        except Exception as e:
+            exception_type, exception_object, exception_traceback = sys.exc_info()
+            line_number = exception_traceback.tb_lineno
+            logging.error(f'line {line_number}: {exception_type} - {e}')
+        finally:
+            elapsed_time = time.time() - start_time
+            logging.info(f"{filename} のデータ処理時間: {elapsed_time:.2f} 秒")
+            q.task_done()
+            
+# 音声認識とデータ送信を行う関数
+async def process_audio(FILE, MIMETYPE):
+    deepgram = Deepgram(DEEPGRAM_API_KEY)
+    source = {'url': FILE} if FILE.startswith('http') else {'buffer': open(FILE, 'rb'), 'mimetype': MIMETYPE}
+    response = await asyncio.create_task(
+        deepgram.transcription.prerecorded(
+            source,
+            {
+                "model": "nova-2",
+                "language": "ja",
+                "smart_format": True,
+                "punctuate": True,
+                "utterances": False,
+                "diarize": True,
+            }
+        )
+    )
+
+    transcript = response["results"]["channels"][0]["alternatives"][0]["transcript"]
+    transcript_diarize = response["results"]["channels"][0]["alternatives"][0]["paragraphs"]["transcript"]
+    utterance_count = transcript_diarize.count("Speaker")
+    sentiment_value = analyze_sentiment(transcript)
+
+    logging.info(f"グループID: {GROUP_ID}")
+    logging.info(f"テキスト: {transcript_diarize}")
+    logging.info(f"発話回数: {utterance_count}")
+    logging.info(f"感情スコア: {sentiment_value}")
+
+    data = {
+        'group_id': GROUP_ID,
+        'transcript': transcript,
+        'transcript_diarize': transcript_diarize,
+        'utterance_count': utterance_count,
+        'sentiment_value': sentiment_value
+    }
+    send_post_request(data)
+
+# 音声ファイルを指定のフォルダに移動
+def move_file(FILE):
     source = FILE
     destination = FOLDER_PATH
-    
+
     # 移動先のディレクトリで同じ名前のファイルが存在する場合、ファイル名を変更
     if os.path.exists(os.path.join(destination, os.path.basename(FILE))):
         base, ext = os.path.splitext(os.path.basename(FILE))
         i = 1
         while os.path.exists(os.path.join(destination, f"{base}_{i}{ext}")):
             i += 1
-        destination = os.path.join(destination, f"{base}_{i}{ext}")
-   
-    shutil.move(source, destination)
+        destination_path = os.path.join(destination, f"{base}_{i}{ext}")
+    else:
+        destination_path = os.path.join(destination, os.path.basename(FILE))
+
+    shutil.move(source, destination_path)
+    logging.info(f"ファイルを移動: {destination_path}")
 
 # テキストの感情分析
 def analyze_sentiment(text_content):
@@ -113,57 +198,38 @@ def analyze_sentiment(text_content):
 
 # データをPOSTリクエストで送信
 def send_post_request(data):
-    response = requests.post(DJANGO_API_URL, json=data, timeout=240)
-    print(response.status_code)
-    print(response.json())
-    if response.status_code == 400:
-        data['transcript'] = None
-        data['transcript_diarize'] = None
+    try:
         response = requests.post(DJANGO_API_URL, json=data, timeout=240)
-    return response
+        logging.info(f"データ送信ステータスコード: {response.status_code}")
+        logging.info(f"サーバからの応答: {response.json()}")
+        if response.status_code == 400:
+            data['transcript'] = None
+            data['transcript_diarize'] = None
+            response = requests.post(DJANGO_API_URL, json=data, timeout=240)
+    except Exception as e:
+        logging.error(f"データ送信エラー: {e}")
 
-async def main():
+def main():
+    q = queue.Queue()
 
-  deepgram = Deepgram(DEEPGRAM_API_KEY)
-  source = {'url': FILE} if FILE.startswith('http') else {'buffer': open(FILE, 'rb'), 'mimetype': MIMETYPE}
-  response = await asyncio.create_task(
-    deepgram.transcription.prerecorded(
-      source,
-      {
-        "model": "nova-2", 
-        "language": "ja", 
-        "smart_format": True, 
-        "punctuate": True, 
-        "utterances": False, 
-        "diarize": True, 
-      }
-    )
-  )
-  
-  move_file()
+    # 録音スレッドを作成
+    record_thread = threading.Thread(target=record_audio, args=(q, RECORD_SECONDS))
+    record_thread.daemon = True
+    record_thread.start()
 
-  transcript = response["results"]["channels"][0]["alternatives"][0]["transcript"]
-  transcript_diarize = response["results"]["channels"][0]["alternatives"][0]["paragraphs"]["transcript"]
-  utterance_count = transcript_diarize.count("Speaker")
-  sentiment_value = analyze_sentiment(transcript)
-  
-  print(GROUP_ID)
-  print(transcript_diarize)
-  print(f"発話回数: {utterance_count}")
-  print(f"感情スコア: {sentiment_value}")
-  
-  data = {
-        'group_id': GROUP_ID,
-        'transcript': transcript,
-        'transcript_diarize': transcript_diarize,
-        'utterance_count': utterance_count,
-        'sentiment_value': sentiment_value
-      }
-  send_post_request(data)
+    # データ処理スレッドを作成
+    process_thread = threading.Thread(target=process_data, args=(q,))
+    process_thread.daemon = True
+    process_thread.start()
 
-try:
-  asyncio.run(main())
-except Exception as e:
-  exception_type, exception_object, exception_traceback = sys.exc_info()
-  line_number = exception_traceback.tb_lineno
-  print(f'line {line_number}: {exception_type} - {e}')
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logging.info("プログラムを終了します")
+        q.put(None)
+        record_thread.join()
+        process_thread.join()
+
+if __name__ == "__main__":
+    main()
