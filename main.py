@@ -84,34 +84,98 @@ def record_audio(q, record_seconds):
         # 次の録音開始までの待機時間を調整（録音時間299秒 + 待機1秒 = 5分間隔）
         time.sleep(1)
 
-# 録音を開始
-record_audio(WAVE_OUTPUT_FILENAME, RECORD_SECONDS)
+# データ処理関数
+def process_data(q):
+    while True:
+        filename = q.get()  # キューからファイル名を取得
 
-# ノイズ除去
-fs, data = wavfile.read(WAVE_OUTPUT_FILENAME)
-lowcut = 100.0
-highcut = 4000.0
-y = butter_bandpass_filter(data, lowcut, highcut, fs, order=6)
-# ノイズ除去後の音声ファイルを保存
-wavfile.write(WAVE_OUTPUT_FILENAME, fs, y.astype(np.int16))
+        if filename is None:
+            break
 
-FILE = WAVE_OUTPUT_FILENAME
-MIMETYPE = "audio/wav"
+        start_time = time.time()
+        logging.info(f"{filename} のデータ処理を開始")
 
-# 音声ファイルをダウンロードフォルダに移動
-def move_file():
+        try:
+            # ノイズ除去
+            fs, data = wavfile.read(filename)
+            lowcut = 100.0
+            highcut = 4000.0
+            y = butter_bandpass_filter(data, lowcut, highcut, fs, order=6)
+            # ノイズ除去後の音声ファイルを保存
+            wavfile.write(filename, fs, y.astype(np.int16))
+
+            FILE = filename
+            MIMETYPE = "audio/wav"
+
+            # 音声認識とデータ送信
+            asyncio.run(process_audio(FILE, MIMETYPE))
+
+            # ファイルを移動
+            move_file(filename)
+
+        except Exception as e:
+            exception_type, exception_object, exception_traceback = sys.exc_info()
+            line_number = exception_traceback.tb_lineno
+            logging.error(f'line {line_number}: {exception_type} - {e}')
+        finally:
+            elapsed_time = time.time() - start_time
+            logging.info(f"{filename} のデータ処理時間: {elapsed_time:.2f} 秒")
+            q.task_done()
+            
+# 音声認識とデータ送信を行う関数
+async def process_audio(FILE, MIMETYPE):
+    deepgram = Deepgram(DEEPGRAM_API_KEY)
+    source = {'url': FILE} if FILE.startswith('http') else {'buffer': open(FILE, 'rb'), 'mimetype': MIMETYPE}
+    response = await asyncio.create_task(
+        deepgram.transcription.prerecorded(
+            source,
+            {
+                "model": "nova-2",
+                "language": "ja",
+                "smart_format": True,
+                "punctuate": True,
+                "utterances": False,
+                "diarize": True,
+            }
+        )
+    )
+
+    transcript = response["results"]["channels"][0]["alternatives"][0]["transcript"]
+    transcript_diarize = response["results"]["channels"][0]["alternatives"][0]["paragraphs"]["transcript"]
+    utterance_count = transcript_diarize.count("Speaker")
+    sentiment_value = analyze_sentiment(transcript)
+
+    logging.info(f"グループID: {GROUP_ID}")
+    logging.info(f"テキスト: {transcript_diarize}")
+    logging.info(f"発話回数: {utterance_count}")
+    logging.info(f"感情スコア: {sentiment_value}")
+
+    data = {
+        'group_id': GROUP_ID,
+        'transcript': transcript,
+        'transcript_diarize': transcript_diarize,
+        'utterance_count': utterance_count,
+        'sentiment_value': sentiment_value
+    }
+    send_post_request(data)
+
+# 音声ファイルを指定のフォルダに移動
+def move_file(FILE):
     source = FILE
     destination = FOLDER_PATH
-    
+
     # 移動先のディレクトリで同じ名前のファイルが存在する場合、ファイル名を変更
     if os.path.exists(os.path.join(destination, os.path.basename(FILE))):
         base, ext = os.path.splitext(os.path.basename(FILE))
         i = 1
         while os.path.exists(os.path.join(destination, f"{base}_{i}{ext}")):
             i += 1
-        destination = os.path.join(destination, f"{base}_{i}{ext}")
-   
-    shutil.move(source, destination)
+        destination_path = os.path.join(destination, f"{base}_{i}{ext}")
+    else:
+        destination_path = os.path.join(destination, os.path.basename(FILE))
+
+    shutil.move(source, destination_path)
+    logging.info(f"ファイルを移動: {destination_path}")
 
 # テキストの感情分析
 def analyze_sentiment(text_content):
@@ -142,43 +206,7 @@ def send_post_request(data):
     return response
 
 async def main():
-
-  deepgram = Deepgram(DEEPGRAM_API_KEY)
-  source = {'url': FILE} if FILE.startswith('http') else {'buffer': open(FILE, 'rb'), 'mimetype': MIMETYPE}
-  response = await asyncio.create_task(
-    deepgram.transcription.prerecorded(
-      source,
-      {
-        "model": "nova-2", 
-        "language": "ja", 
-        "smart_format": True, 
-        "punctuate": True, 
-        "utterances": False, 
-        "diarize": True, 
-      }
-    )
-  )
-  
   move_file()
-
-  transcript = response["results"]["channels"][0]["alternatives"][0]["transcript"]
-  transcript_diarize = response["results"]["channels"][0]["alternatives"][0]["paragraphs"]["transcript"]
-  utterance_count = transcript_diarize.count("Speaker")
-  sentiment_value = analyze_sentiment(transcript)
-  
-  print(GROUP_ID)
-  print(transcript_diarize)
-  print(f"発話回数: {utterance_count}")
-  print(f"感情スコア: {sentiment_value}")
-  
-  data = {
-        'group_id': GROUP_ID,
-        'transcript': transcript,
-        'transcript_diarize': transcript_diarize,
-        'utterance_count': utterance_count,
-        'sentiment_value': sentiment_value
-      }
-  send_post_request(data)
 
 try:
   asyncio.run(main())
