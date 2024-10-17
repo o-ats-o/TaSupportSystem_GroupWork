@@ -11,6 +11,17 @@ from scipy.signal import butter, lfilter
 from local_settings import *
 from google.cloud import language_v1
 import requests
+import logging
+
+# ログの設定
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler("processing.log"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 
 # 録音のパラメータ設定
 FORMAT = pyaudio.paInt16 # 音声のフォーマット
