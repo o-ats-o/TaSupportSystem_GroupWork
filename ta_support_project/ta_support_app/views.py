@@ -37,7 +37,7 @@ class DataViewSet(viewsets.ModelViewSet):
         if not transcript:
             return Response({'error': 'Transcript is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        prompt = ("#命令文:\nあなたは優秀な教員です。以降に示す会話の一部を見て、このグループに対してどのように声を掛け指導を開始しますか？指導の際の声掛けシナリオを箇条書きで複数提示してください。\n" + "#グループワークの内容:\n" + transcript)
+        prompt = ("#命令文:\nあなたは優秀な教員です。以降に示すグループワークの内容を見て、このグループに対してどのように声を掛け指導を開始しますか？指導の際の声掛けシナリオを箇条書きで複数提示してください。その際、グループの議論を活性化させることに焦点を置いてください。\n" + "#グループワークの内容:\n" + transcript)
 
 
         try:
