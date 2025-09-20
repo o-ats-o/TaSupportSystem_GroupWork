@@ -3,3 +3,11 @@ local_settings.py
 __pycache__
 ta_support_project/ta_support_project/settings.py
 getData.py
+
+# virtual environments
+venv/
+.venv/
+.venv311/
+
+# logs
+processing.log
