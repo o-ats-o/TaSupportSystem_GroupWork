@@ -15,6 +15,9 @@ import logging
 import time
 import threading
 import queue
+import subprocess
+import tempfile
+from pathlib import Path
 
 # ログの設定
 logging.basicConfig(
@@ -45,6 +48,73 @@ def butter_bandpass_filter(data, lowcut, highcut, fs, order=5):
     b, a = butter_bandpass(lowcut, highcut, fs, order=order)
     y = lfilter(b, a, data)
     return y
+
+# resemble-enhance を使った追加のデノイズ（出力は必ずFLAC）
+def denoise_with_resemble(input_file, device="mps"):
+    try:
+        src_path = Path(input_file)
+        if not src_path.is_file():
+            logging.error(f"入力ファイルが見つかりません: {input_file}")
+            raise FileNotFoundError(f"入力ファイルが見つかりません: {input_file}")
+
+        with tempfile.TemporaryDirectory() as temp_in_dir, tempfile.TemporaryDirectory() as temp_out_dir:
+            temp_in_path = Path(temp_in_dir)
+            temp_out_path = Path(temp_out_dir)
+
+            # 入力を一時ディレクトリへコピー
+            shutil.copy(src_path, temp_in_path)
+
+            command = [
+                "resemble-enhance",
+                str(temp_in_path),
+                str(temp_out_path),
+                "--denoise_only",
+                "--device",
+                device,
+            ]
+
+            logging.info("resemble-enhance によるデノイズを開始します")
+            try:
+                subprocess.run(command, check=True, capture_output=True, text=True)
+            except FileNotFoundError:
+                logging.error("'resemble-enhance' コマンドが見つかりません。'pip install resemble-enhance' でインストールし、PATHに含めてください。")
+                raise
+            except subprocess.CalledProcessError as e:
+                logging.error("resemble-enhance の実行に失敗しました: %s", e.stderr)
+                raise
+
+            # 出力ファイル探索
+            processed_files = list(temp_out_path.glob(f"*{src_path.name}"))
+            if not processed_files:
+                logging.error("resemble-enhance の出力が見つかりませんでした。")
+                # デバッグ用に出力ディレクトリの内容を記録
+                try:
+                    contents = [str(p) for p in temp_out_path.iterdir()]
+                    logging.error(f"出力ディレクトリ内容: {contents}")
+                except Exception:
+                    pass
+                raise RuntimeError("resemble-enhance の出力が見つかりませんでした")
+
+            intermediate_file = processed_files[0]
+
+            # 出力は常にFLACに変換
+            out_path = src_path.parent / f"{src_path.stem}_resemble_enhance_denoised.flac"
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", str(intermediate_file), "-c:a", "flac", "-compression_level", "12", str(out_path)
+            ]
+            try:
+                subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
+                logging.info(f"デノイズ完了(FLAC): {out_path}")
+                return str(out_path)
+            except FileNotFoundError:
+                logging.error("'ffmpeg' が見つかりません。FLAC出力には ffmpeg が必要です。")
+                raise
+            except subprocess.CalledProcessError as e:
+                logging.error("ffmpeg によるFLAC変換に失敗しました: %s", e.stderr)
+                raise
+    except Exception as e:
+        logging.error(f"denoise_with_resemble 内で予期しないエラー: {e}")
+        raise
 
 # 録音関数
 def record_audio(q, record_seconds):
@@ -98,7 +168,7 @@ def process_data(q):
         logging.info(f"{filename} のデータ処理を開始")
 
         try:
-            # ノイズ除去
+            # ノイズ除去（バンドパスフィルタ）
             fs, data = wavfile.read(filename)
             lowcut = 100.0
             highcut = 4000.0
@@ -106,14 +176,23 @@ def process_data(q):
             # ノイズ除去後の音声ファイルを保存
             wavfile.write(filename, fs, y.astype(np.int16))
 
-            FILE = filename
-            MIMETYPE = "audio/wav"
+            # resemble-enhance による追加のデノイズ処理（FLAC固定）
+            denoised_file = denoise_with_resemble(filename, device="mps")
+
+            FILE = denoised_file
+            MIMETYPE = "audio/flac"
 
             # 音声認識とデータ送信
             asyncio.run(process_audio(FILE, MIMETYPE))
 
-            # ファイルを移動
-            move_file(filename)
+            # ファイルを移動（デノイズ後のファイルを優先して移動し、元ファイルも退避）
+            try:
+                if os.path.exists(FILE):
+                    move_file(FILE)
+                if FILE != filename and os.path.exists(filename):
+                    move_file(filename)
+            except Exception as e:
+                logging.error(f"ファイル移動エラー: {e}")
 
         except Exception as e:
             exception_type, exception_object, exception_traceback = sys.exc_info()
