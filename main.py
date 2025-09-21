@@ -1,15 +1,13 @@
 import pyaudio
 import wave
 import sys
-from deepgram import Deepgram
-import asyncio, json
+import json
 import shutil
 import os
 import numpy as np
 from scipy.io import wavfile
 from scipy.signal import butter, lfilter
 from local_settings import *
-from google.cloud import language_v1
 import requests
 import logging
 import time
@@ -18,6 +16,8 @@ import queue
 import subprocess
 import tempfile
 from pathlib import Path
+import socket
+import re
 
 # ログの設定
 logging.basicConfig(
@@ -48,6 +48,12 @@ def butter_bandpass_filter(data, lowcut, highcut, fs, order=5):
     b, a = butter_bandpass(lowcut, highcut, fs, order=order)
     y = lfilter(b, a, data)
     return y
+
+# Worker API ベースURL（local_settings または環境変数から取得）
+try:
+    WORKER_API_BASE_URL = WORKER_API_BASE_URL  # type: ignore[name-defined]
+except NameError:
+    WORKER_API_BASE_URL = os.getenv("WORKER_API_BASE_URL", "http://localhost:8787")
 
 # resemble-enhance を使った追加のデノイズ（出力は必ずFLAC）
 def denoise_with_resemble(input_file, device="mps"):
@@ -116,6 +122,62 @@ def denoise_with_resemble(input_file, device="mps"):
         logging.error(f"denoise_with_resemble 内で予期しないエラー: {e}")
         raise
 
+# session_id 生成（GROUP_IDを含める・安全な文字に正規化）
+def generate_session_id(group_id: str) -> str:
+    safe_group = re.sub(r"[^A-Za-z0-9_-]", "-", str(group_id))
+    host = socket.gethostname()
+    safe_host = re.sub(r"[^A-Za-z0-9_-]", "-", host)
+    epoch = int(time.time())
+    return f"{safe_group}-{safe_host}-{epoch}"
+
+# アップロード用の署名URLを取得
+def get_signed_upload_url(content_type: str):
+    url = f"{WORKER_API_BASE_URL}/api/generate-upload-url"
+    try:
+        resp = requests.post(url, json={"contentType": content_type}, timeout=60)
+        resp.raise_for_status()
+        body = resp.json()
+        upload_url = body.get("uploadUrl")
+        object_key = body.get("objectKey")
+        if not upload_url or not object_key:
+            raise ValueError("署名URLレスポンスに uploadUrl/objectKey がありません")
+        logging.info("署名付きURLを取得しました")
+        return upload_url, object_key
+    except Exception as e:
+        logging.error(f"署名付きURL取得に失敗: {e}")
+        raise
+
+# 署名URLに対して音声をPUTでアップロード
+def upload_to_r2(upload_url: str, file_path: str, content_type: str):
+    try:
+        with open(file_path, "rb") as f:
+            headers = {"Content-Type": content_type}
+            resp = requests.put(upload_url, data=f, headers=headers, timeout=300)
+        if not (200 <= resp.status_code < 300):
+            raise RuntimeError(f"R2アップロード失敗: status={resp.status_code} body={resp.text[:200]}")
+        logging.info("R2へアップロード完了")
+    except Exception as e:
+        logging.error(f"R2アップロード中にエラー: {e}")
+        raise
+
+# 文字起こしの処理依頼
+def request_transcription(object_key: str, session_id: str, group_id: str):
+    url = f"{WORKER_API_BASE_URL}/api/process-request"
+    payload = {"objectKey": object_key, "sessionId": session_id, "groupId": group_id}
+    try:
+        resp = requests.post(url, json=payload, timeout=60)
+        if resp.status_code not in (200, 201, 202):
+            raise RuntimeError(f"処理依頼失敗: status={resp.status_code} body={resp.text[:200]}")
+        body = resp.json() if resp.content else {}
+        job_id = body.get("jobId")
+        if job_id:
+            logging.info(f"処理依頼を受理: jobId={job_id}")
+        else:
+            logging.info("処理依頼を受理（jobId未返却）")
+    except Exception as e:
+        logging.error(f"処理依頼中にエラー: {e}")
+        raise
+
 # 録音関数
 def record_audio(q, record_seconds):
     while True:
@@ -180,10 +242,15 @@ def process_data(q):
             denoised_file = denoise_with_resemble(filename, device="mps")
 
             FILE = denoised_file
-            MIMETYPE = "audio/flac"
+            CONTENT_TYPE = "audio/flac"
 
-            # 音声認識とデータ送信
-            asyncio.run(process_audio(FILE, MIMETYPE))
+            # R2 にアップロードし、処理依頼を送る
+            upload_url, object_key = get_signed_upload_url(CONTENT_TYPE)
+            upload_to_r2(upload_url, FILE, CONTENT_TYPE)
+
+            # セッションID生成（GROUP_ID + ホスト名 + タイムスタンプ）
+            session_id = generate_session_id(GROUP_ID)
+            request_transcription(object_key, session_id, GROUP_ID)
 
             # ファイルを移動（デノイズ後のファイルを優先して移動し、元ファイルも退避）
             try:
@@ -196,50 +263,13 @@ def process_data(q):
 
         except Exception as e:
             exception_type, exception_object, exception_traceback = sys.exc_info()
-            line_number = exception_traceback.tb_lineno
+            line_number = exception_traceback.tb_lineno if exception_traceback else -1
             logging.error(f'line {line_number}: {exception_type} - {e}')
         finally:
             elapsed_time = time.time() - start_time
             logging.info(f"{filename} のデータ処理時間: {elapsed_time:.2f} 秒")
             q.task_done()
             
-# 音声認識とデータ送信を行う関数
-async def process_audio(FILE, MIMETYPE):
-    deepgram = Deepgram(DEEPGRAM_API_KEY)
-    source = {'url': FILE} if FILE.startswith('http') else {'buffer': open(FILE, 'rb'), 'mimetype': MIMETYPE}
-    response = await asyncio.create_task(
-        deepgram.transcription.prerecorded(
-            source,
-            {
-                "model": "nova-2",
-                "language": "ja",
-                "smart_format": True,
-                "punctuate": True,
-                "utterances": False,
-                "diarize": True,
-            }
-        )
-    )
-
-    transcript = response["results"]["channels"][0]["alternatives"][0]["transcript"]
-    transcript_diarize = response["results"]["channels"][0]["alternatives"][0]["paragraphs"]["transcript"]
-    utterance_count = transcript_diarize.count("Speaker")
-    sentiment_value = analyze_sentiment(transcript)
-
-    logging.info(f"グループID: {GROUP_ID}")
-    logging.info(f"テキスト: {transcript_diarize}")
-    logging.info(f"発話回数: {utterance_count}")
-    logging.info(f"感情スコア: {sentiment_value}")
-
-    data = {
-        'group_id': GROUP_ID,
-        'transcript': transcript,
-        'transcript_diarize': transcript_diarize,
-        'utterance_count': utterance_count,
-        'sentiment_value': sentiment_value
-    }
-    send_post_request(data)
-
 # 音声ファイルを指定のフォルダに移動
 def move_file(FILE):
     source = FILE
@@ -257,36 +287,6 @@ def move_file(FILE):
 
     shutil.move(source, destination_path)
     logging.info(f"ファイルを移動: {destination_path}")
-
-# テキストの感情分析
-def analyze_sentiment(text_content):
-  
-    client = language_v1.LanguageServiceClient()
-    
-    type_ = language_v1.Document.Type.PLAIN_TEXT
-    
-    language = "ja"
-    document = {"content": text_content, "type_": type_, "language": language}
-
-    # Available values: NONE, UTF8, UTF16, UTF32
-    encoding_type = language_v1.EncodingType.UTF8
-
-    response = client.analyze_sentiment(request = {'document': document, 'encoding_type': encoding_type})
-
-    return response.document_sentiment.score
-
-# データをPOSTリクエストで送信
-def send_post_request(data):
-    try:
-        response = requests.post(DJANGO_API_URL, json=data, timeout=240)
-        logging.info(f"データ送信ステータスコード: {response.status_code}")
-        logging.info(f"サーバからの応答: {response.json()}")
-        if response.status_code == 400:
-            data['transcript'] = None
-            data['transcript_diarize'] = None
-            response = requests.post(DJANGO_API_URL, json=data, timeout=240)
-    except Exception as e:
-        logging.error(f"データ送信エラー: {e}")
 
 def main():
     q = queue.Queue()
