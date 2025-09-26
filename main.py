@@ -18,6 +18,8 @@ import tempfile
 from pathlib import Path
 import socket
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # ログの設定
 logging.basicConfig(
@@ -208,7 +210,8 @@ def record_audio(q, record_seconds):
         audio.terminate()
 
         # ファイルに保存
-        filename = f"output_{int(time.time())}.wav"
+        ts = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y%m%d-%H%M%S")
+        filename = f"output_{ts}.wav"
         waveFile = wave.open(filename, 'wb')
         waveFile.setnchannels(CHANNELS)
         waveFile.setsampwidth(audio.get_sample_size(FORMAT))
