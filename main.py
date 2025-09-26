@@ -34,7 +34,7 @@ FORMAT = pyaudio.paInt16 # 音声のフォーマット
 CHANNELS = 1             # モノラル
 RATE = 44100             # サンプルレート
 CHUNK = 1024             # データの読み込みサイズ
-RECORD_SECONDS = 299     # 録音時間
+RECORD_SECONDS = 299.8  # 録音時間
 
 # バターワースフィルタ
 def butter_bandpass(lowcut, highcut, fs, order=5):
@@ -54,6 +54,10 @@ try:
     WORKER_API_BASE_URL = WORKER_API_BASE_URL  # type: ignore[name-defined]
 except NameError:
     WORKER_API_BASE_URL = os.getenv("WORKER_API_BASE_URL", "http://localhost:8787")
+
+# 末尾スラッシュは除去して正規化
+if WORKER_API_BASE_URL.endswith('/'):
+    WORKER_API_BASE_URL = WORKER_API_BASE_URL[:-1]
 
 # resemble-enhance を使った追加のデノイズ（出力は必ずFLAC）
 def denoise_with_resemble(input_file, device="mps"):
@@ -215,8 +219,8 @@ def record_audio(q, record_seconds):
         # キューにファイル名を追加
         q.put(filename)
 
-        # 次の録音開始までの待機時間を調整（録音時間299秒 + 待機1秒 = 5分間隔）
-        time.sleep(1)
+        # 次の録音開始までの待機時間を調整（録音時間299.8秒 + 待機0.2秒 = 5分間隔）
+        time.sleep(0.2)
 
 # データ処理関数
 def process_data(q):
