@@ -5,9 +5,8 @@
 - python manage.py runserver 
 
 # データ入力メモ(main.py)
-- deepgram-sdk==2.12.0 で動作（最新の入れると動かないかも）
+- Python 3.11以下で動作
 - local_settings.pyをmain.pyと同じ階層に作成
-  - DEEPGRAM_API_KEY = 'YOUR_API_KEY'
   - FOLDER_PATH = 'YOUR_FOLDER_PATH'
-  - DJANGO_API_URL = "http://YOUR_LOCAL_IP_ADDRESS/api/data/"
   - GROUP_ID = アルファベット小文字
+  - WORKER_API_BASE_URL = "<デプロイしたURL>"
