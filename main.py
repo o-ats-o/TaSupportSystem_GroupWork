@@ -21,7 +21,7 @@ import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from os import fspath
-from typing import Sequence
+
 
 # ログの設定
 logging.basicConfig(
@@ -62,6 +62,7 @@ except NameError:
 # 末尾スラッシュは除去して正規化
 if WORKER_API_BASE_URL.endswith('/'):
     WORKER_API_BASE_URL = WORKER_API_BASE_URL[:-1]
+
 def _convert_to_flac(input_path: str) -> tuple[str, str]:
     """ffmpegでFLACに変換し、(flac_path, content_type) を返す。
     失敗時は (input_path, 推定content_type) を返す。
@@ -83,130 +84,6 @@ def _convert_to_flac(input_path: str) -> tuple[str, str]:
         logging.error("ffmpeg によるFLAC変換に失敗しました: %s", e.stderr)
         return str(src), "audio/wav"
 
-
-def _prepare_torchaudio() -> None:
-    os.environ.setdefault("TORCHAUDIO_USE_SOUNDFILE", "1")
-    os.environ.setdefault("TORCHAUDIO_BACKEND", "soundfile")
-
-    import torchaudio  # type: ignore
-
-    original_load = torchaudio.load
-
-    def _load(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
-        return original_load(fspath(path), *args, **kwargs)
-
-    torchaudio.load = _load  # type: ignore[assignment]
-
-    try:
-        torchaudio.USE_SOUNDFILE_LEGACY_INTERFACE = True  # type: ignore[attr-defined]
-    except AttributeError:
-        pass
-
-
-def _run_resemble_enhance(args: Sequence[str]) -> None:
-    _prepare_torchaudio()
-
-    from resemble_enhance.enhancer.__main__ import main as enhancer_main  # type: ignore
-
-    saved_argv = sys.argv[:]
-    sys.argv = ["resemble-enhance", *args]
-    try:
-        try:
-            result = enhancer_main()
-        except SystemExit as exc:  # noqa: BLE001
-            code = exc.code
-            if code is None:
-                return
-            if isinstance(code, int):
-                if code != 0:
-                    raise subprocess.CalledProcessError(code, ["resemble-enhance", *args])
-                return
-            raise RuntimeError(str(code))
-
-        if isinstance(result, int) and result != 0:
-            raise subprocess.CalledProcessError(result, ["resemble-enhance", *args])
-    finally:
-        sys.argv = saved_argv
-
-
-# resemble-enhance を使った追加のデノイズ（出力は必ずFLAC）
-def denoise_with_resemble(input_file: str) -> str:
-    try:
-        src_path = Path(input_file)
-        if not src_path.is_file():
-            logging.error(f"入力ファイルが見つかりません: {input_file}")
-            raise FileNotFoundError(f"入力ファイルが見つかりません: {input_file}")
-
-        with tempfile.TemporaryDirectory() as temp_in_dir, tempfile.TemporaryDirectory() as temp_out_dir:
-            temp_in_path = Path(temp_in_dir)
-            temp_out_path = Path(temp_out_dir)
-
-            # 入力を一時ディレクトリへコピー
-            shutil.copy(src_path, temp_in_path)
-            command = [
-                str(temp_in_path),
-                str(temp_out_path),
-                "--denoise_only",
-                "--device",
-                "cpu",
-            ]
-
-            # ライブラリ同梱のモデルを優先的に利用して git-lfs 依存を回避
-            try:
-                import resemble_enhance  # type: ignore
-
-                package_root = Path(resemble_enhance.__file__).resolve().parent
-                bundled_run_dir = package_root / "model_repo" / "enhancer_stage2"
-                if bundled_run_dir.exists():
-                    command.extend(["--run_dir", str(bundled_run_dir)])
-                    logging.info(f"resemble-enhance run_dir を固定: {bundled_run_dir}")
-                else:
-                    logging.warning("同梱の run_dir が見つからなかったため、自動ダウンロードを試みます")
-            except Exception as exc:
-                logging.warning(f"run_dir の事前設定に失敗しました: {exc}")
-
-            logging.info("resemble-enhance によるデノイズを開始します")
-            try:
-                _run_resemble_enhance(command)
-            except FileNotFoundError:
-                logging.error("'resemble-enhance' コマンドが見つかりません。'pip install resemble-enhance' でインストールし、PATHに含めてください。")
-                raise
-            except subprocess.CalledProcessError as e:
-                logging.error("resemble-enhance の実行に失敗しました: %s", e.stderr)
-                raise
-
-            # 出力ファイル探索
-            processed_files = list(temp_out_path.glob(f"*{src_path.name}"))
-            if not processed_files:
-                logging.error("resemble-enhance の出力が見つかりませんでした。")
-                # デバッグ用に出力ディレクトリの内容を記録
-                try:
-                    contents = [str(p) for p in temp_out_path.iterdir()]
-                    logging.error(f"出力ディレクトリ内容: {contents}")
-                except Exception:
-                    pass
-                raise RuntimeError("resemble-enhance の出力が見つかりませんでした")
-
-            intermediate_file = processed_files[0]
-
-            # 出力は常にFLACに変換
-            out_path = src_path.parent / f"{src_path.stem}_resemble_enhance_denoised.flac"
-            ffmpeg_cmd = [
-                "ffmpeg", "-y", "-i", str(intermediate_file), "-c:a", "flac", "-compression_level", "12", str(out_path)
-            ]
-            try:
-                subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
-                logging.info(f"デノイズ完了(FLAC): {out_path}")
-                return str(out_path)
-            except FileNotFoundError:
-                logging.error("'ffmpeg' が見つかりません。FLAC出力には ffmpeg が必要です。")
-                raise
-            except subprocess.CalledProcessError as e:
-                logging.error("ffmpeg によるFLAC変換に失敗しました: %s", e.stderr)
-                raise
-    except Exception as e:
-        logging.error(f"denoise_with_resemble 内で予期しないエラー: {e}")
-        raise
 
 # session_id 生成（GROUP_IDを含める・安全な文字に正規化）
 def generate_session_id(group_id: str) -> str:
@@ -317,22 +194,22 @@ def process_data(q):
         logging.info(f"{filename} のデータ処理を開始")
 
         try:
+            # バンドパスフィルタ適用後の音声ファイルパス
+            bandpassed_file_path = filename
+
             # ノイズ除去（バンドパスフィルタ）
             fs, data = wavfile.read(filename)
             lowcut = 100.0
             highcut = 4000.0
             y = butter_bandpass_filter(data, lowcut, highcut, fs, order=6)
-            # ノイズ除去後の音声ファイルを保存
-            wavfile.write(filename, fs, y.astype(np.int16))
+            
+            # メモリ上のデータを一時ファイルに書き出し、元のファイル(filename)を上書きしない
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_f:
+                bandpassed_file_path = temp_f.name
+                wavfile.write(bandpassed_file_path, fs, y.astype(np.int16))
 
-            # resemble-enhance による追加のデノイズ処理（CPU固定 + 失敗時フォールバック）
-            try:
-                denoised_file = denoise_with_resemble(filename)
-                FILE = denoised_file
-                CONTENT_TYPE = "audio/flac"
-            except Exception:
-                logging.warning("resemble-enhance が失敗したため、バンドパス後の音源をFLAC変換して続行します。")
-                FILE, CONTENT_TYPE = _convert_to_flac(filename)
+            # バンドパス後の音源をFLACへ変換
+            FILE, CONTENT_TYPE = _convert_to_flac(bandpassed_file_path)
 
             # R2 にアップロードし、処理依頼を送る
             upload_url, object_key = get_signed_upload_url(CONTENT_TYPE)
@@ -346,7 +223,7 @@ def process_data(q):
             try:
                 if os.path.exists(FILE):
                     move_file(FILE)
-                if FILE != filename and os.path.exists(filename):
+                if FILE!= filename and os.path.exists(filename):
                     move_file(filename)
             except Exception as e:
                 logging.error(f"ファイル移動エラー: {e}")
@@ -356,6 +233,13 @@ def process_data(q):
             line_number = exception_traceback.tb_lineno if exception_traceback else -1
             logging.error(f'line {line_number}: {exception_type} - {e}')
         finally:
+            # 一時ファイルをクリーンアップ
+            if 'bandpassed_file_path' in locals() and bandpassed_file_path!= filename and os.path.exists(bandpassed_file_path):
+                try:
+                    os.remove(bandpassed_file_path)
+                except OSError as e:
+                    logging.error(f"一時ファイルの削除に失敗: {e}")
+
             elapsed_time = time.time() - start_time
             logging.info(f"{filename} のデータ処理時間: {elapsed_time:.2f} 秒")
             q.task_done()
@@ -404,8 +288,9 @@ def main():
     except KeyboardInterrupt:
         logging.info("プログラムを終了します")
         q.put(None)
-        record_thread.join()
+        # スレッドの終了を待つ
         process_thread.join()
+        # record_threadはdaemonなので、メインスレッドが終了すれば自動的に終了する
 
 if __name__ == "__main__":
     main()
