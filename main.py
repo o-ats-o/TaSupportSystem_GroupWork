@@ -119,7 +119,8 @@ def denoise_with_resemble(input_file, device: str | None = None):
             shutil.copy(src_path, temp_in_path)
 
             command = [
-                "resemble-enhance",
+                sys.executable,
+                str(Path(__file__).parent / "tools" / "run_resemble_enhance.py"),
                 str(temp_in_path),
                 str(temp_out_path),
                 "--denoise_only",
@@ -129,10 +130,7 @@ def denoise_with_resemble(input_file, device: str | None = None):
 
             logging.info("resemble-enhance によるデノイズを開始します")
             try:
-                # torchaudio の sox_io Path問題を避けるため soundfile バックエンドを強制
-                env = os.environ.copy()
-                env.setdefault("TORCHAUDIO_USE_SOUNDFILE", "1")
-                subprocess.run(command, check=True, capture_output=True, text=True, env=env)
+                subprocess.run(command, check=True, capture_output=True, text=True)
             except FileNotFoundError:
                 logging.error("'resemble-enhance' コマンドが見つかりません。'pip install resemble-enhance' でインストールし、PATHに含めてください。")
                 raise
@@ -329,6 +327,13 @@ def process_data(q):
 def move_file(FILE):
     source = FILE
     destination = FOLDER_PATH
+
+    # 移動先ディレクトリが存在しなければ作成
+    try:
+        os.makedirs(destination, exist_ok=True)
+    except Exception as e:
+        logging.error(f"移動先ディレクトリの作成に失敗: {e}")
+        raise
 
     # 移動先のディレクトリで同じ名前のファイルが存在する場合、ファイル名を変更
     if os.path.exists(os.path.join(destination, os.path.basename(FILE))):
