@@ -38,7 +38,7 @@ FORMAT = pyaudio.paInt16 # 音声のフォーマット
 CHANNELS = 1             # モノラル
 RATE = 44100             # サンプルレート
 CHUNK = 1024             # データの読み込みサイズ
-RECORD_SECONDS = 299.8  # 録音時間
+RECORD_SECONDS = 50  # 録音時間
 
 # バターワースフィルタ
 def butter_bandpass(lowcut, highcut, fs, order=5):
@@ -62,23 +62,6 @@ except NameError:
 # 末尾スラッシュは除去して正規化
 if WORKER_API_BASE_URL.endswith('/'):
     WORKER_API_BASE_URL = WORKER_API_BASE_URL[:-1]
-
-def _detect_accel_device() -> str:
-    """利用可能なアクセラレータを判定し、"mps" か "cpu" を返す。
-
-    - Apple Silicon + macOS 12.3+ + torch.mps 利用可 → "mps"
-    - それ以外 → "cpu"
-    """
-    try:
-        import torch  # type: ignore
-        has_mps = getattr(torch.backends, "mps", None)
-        if has_mps and torch.backends.mps.is_available():
-            return "mps"
-    except Exception:
-        pass
-    return "cpu"
-
-
 def _convert_to_flac(input_path: str) -> tuple[str, str]:
     """ffmpegでFLACに変換し、(flac_path, content_type) を返す。
     失敗時は (input_path, 推定content_type) を返す。
@@ -147,12 +130,8 @@ def _run_resemble_enhance(args: Sequence[str]) -> None:
 
 
 # resemble-enhance を使った追加のデノイズ（出力は必ずFLAC）
-def denoise_with_resemble(input_file, device: str | None = None):
+def denoise_with_resemble(input_file: str) -> str:
     try:
-        # デバイス自動判定（未指定時）
-        if not device:
-            device = _detect_accel_device()
-
         src_path = Path(input_file)
         if not src_path.is_file():
             logging.error(f"入力ファイルが見つかりません: {input_file}")
@@ -164,14 +143,27 @@ def denoise_with_resemble(input_file, device: str | None = None):
 
             # 入力を一時ディレクトリへコピー
             shutil.copy(src_path, temp_in_path)
-
             command = [
                 str(temp_in_path),
                 str(temp_out_path),
                 "--denoise_only",
                 "--device",
-                device,
+                "cpu",
             ]
+
+            # ライブラリ同梱のモデルを優先的に利用して git-lfs 依存を回避
+            try:
+                import resemble_enhance  # type: ignore
+
+                package_root = Path(resemble_enhance.__file__).resolve().parent
+                bundled_run_dir = package_root / "model_repo" / "enhancer_stage2"
+                if bundled_run_dir.exists():
+                    command.extend(["--run_dir", str(bundled_run_dir)])
+                    logging.info(f"resemble-enhance run_dir を固定: {bundled_run_dir}")
+                else:
+                    logging.warning("同梱の run_dir が見つからなかったため、自動ダウンロードを試みます")
+            except Exception as exc:
+                logging.warning(f"run_dir の事前設定に失敗しました: {exc}")
 
             logging.info("resemble-enhance によるデノイズを開始します")
             try:
@@ -333,9 +325,9 @@ def process_data(q):
             # ノイズ除去後の音声ファイルを保存
             wavfile.write(filename, fs, y.astype(np.int16))
 
-            # resemble-enhance による追加のデノイズ処理（自動デバイス判定 + 失敗時フォールバック）
+            # resemble-enhance による追加のデノイズ処理（CPU固定 + 失敗時フォールバック）
             try:
-                denoised_file = denoise_with_resemble(filename, device=None)
+                denoised_file = denoise_with_resemble(filename)
                 FILE = denoised_file
                 CONTENT_TYPE = "audio/flac"
             except Exception:
