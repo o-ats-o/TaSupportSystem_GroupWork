@@ -61,9 +61,51 @@ except NameError:
 if WORKER_API_BASE_URL.endswith('/'):
     WORKER_API_BASE_URL = WORKER_API_BASE_URL[:-1]
 
-# resemble-enhance を使った追加のデノイズ（出力は必ずFLAC）
-def denoise_with_resemble(input_file, device="mps"):
+def _detect_accel_device() -> str:
+    """利用可能なアクセラレータを判定し、"mps" か "cpu" を返す。
+
+    - Apple Silicon + macOS 12.3+ + torch.mps 利用可 → "mps"
+    - それ以外 → "cpu"
+    """
     try:
+        import torch  # type: ignore
+        has_mps = getattr(torch.backends, "mps", None)
+        if has_mps and torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def _convert_to_flac(input_path: str) -> tuple[str, str]:
+    """ffmpegでFLACに変換し、(flac_path, content_type) を返す。
+    失敗時は (input_path, 推定content_type) を返す。
+    """
+    src = Path(input_path)
+    out_path = src.parent / f"{src.stem}.flac"
+    ffmpeg_cmd = [
+        "ffmpeg", "-y", "-i", str(src), "-c:a", "flac", "-compression_level", "12", str(out_path)
+    ]
+    try:
+        subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
+        logging.info(f"FLAC変換完了: {out_path}")
+        return str(out_path), "audio/flac"
+    except FileNotFoundError:
+        logging.error("'ffmpeg' が見つかりません。FLAC出力には ffmpeg が必要です。WAVのまま続行します。")
+        # WAVのままアップロード
+        return str(src), "audio/wav"
+    except subprocess.CalledProcessError as e:
+        logging.error("ffmpeg によるFLAC変換に失敗しました: %s", e.stderr)
+        return str(src), "audio/wav"
+
+
+# resemble-enhance を使った追加のデノイズ（出力は必ずFLAC）
+def denoise_with_resemble(input_file, device: str | None = None):
+    try:
+        # デバイス自動判定（未指定時）
+        if not device:
+            device = _detect_accel_device()
+
         src_path = Path(input_file)
         if not src_path.is_file():
             logging.error(f"入力ファイルが見つかりません: {input_file}")
@@ -87,7 +129,10 @@ def denoise_with_resemble(input_file, device="mps"):
 
             logging.info("resemble-enhance によるデノイズを開始します")
             try:
-                subprocess.run(command, check=True, capture_output=True, text=True)
+                # torchaudio の sox_io Path問題を避けるため soundfile バックエンドを強制
+                env = os.environ.copy()
+                env.setdefault("TORCHAUDIO_USE_SOUNDFILE", "1")
+                subprocess.run(command, check=True, capture_output=True, text=True, env=env)
             except FileNotFoundError:
                 logging.error("'resemble-enhance' コマンドが見つかりません。'pip install resemble-enhance' でインストールし、PATHに含めてください。")
                 raise
@@ -245,11 +290,14 @@ def process_data(q):
             # ノイズ除去後の音声ファイルを保存
             wavfile.write(filename, fs, y.astype(np.int16))
 
-            # resemble-enhance による追加のデノイズ処理（FLAC固定）
-            denoised_file = denoise_with_resemble(filename, device="mps")
-
-            FILE = denoised_file
-            CONTENT_TYPE = "audio/flac"
+            # resemble-enhance による追加のデノイズ処理（自動デバイス判定 + 失敗時フォールバック）
+            try:
+                denoised_file = denoise_with_resemble(filename, device=None)
+                FILE = denoised_file
+                CONTENT_TYPE = "audio/flac"
+            except Exception:
+                logging.warning("resemble-enhance が失敗したため、バンドパス後の音源をFLAC変換して続行します。")
+                FILE, CONTENT_TYPE = _convert_to_flac(filename)
 
             # R2 にアップロードし、処理依頼を送る
             upload_url, object_key = get_signed_upload_url(CONTENT_TYPE)
