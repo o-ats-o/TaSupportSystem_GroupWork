@@ -20,6 +20,8 @@ import socket
 import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from os import fspath
+from typing import Sequence
 
 # ログの設定
 logging.basicConfig(
@@ -99,6 +101,51 @@ def _convert_to_flac(input_path: str) -> tuple[str, str]:
         return str(src), "audio/wav"
 
 
+def _prepare_torchaudio() -> None:
+    os.environ.setdefault("TORCHAUDIO_USE_SOUNDFILE", "1")
+    os.environ.setdefault("TORCHAUDIO_BACKEND", "soundfile")
+
+    import torchaudio  # type: ignore
+
+    original_load = torchaudio.load
+
+    def _load(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        return original_load(fspath(path), *args, **kwargs)
+
+    torchaudio.load = _load  # type: ignore[assignment]
+
+    try:
+        torchaudio.USE_SOUNDFILE_LEGACY_INTERFACE = True  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
+
+
+def _run_resemble_enhance(args: Sequence[str]) -> None:
+    _prepare_torchaudio()
+
+    from resemble_enhance.enhancer.__main__ import main as enhancer_main  # type: ignore
+
+    saved_argv = sys.argv[:]
+    sys.argv = ["resemble-enhance", *args]
+    try:
+        try:
+            result = enhancer_main()
+        except SystemExit as exc:  # noqa: BLE001
+            code = exc.code
+            if code is None:
+                return
+            if isinstance(code, int):
+                if code != 0:
+                    raise subprocess.CalledProcessError(code, ["resemble-enhance", *args])
+                return
+            raise RuntimeError(str(code))
+
+        if isinstance(result, int) and result != 0:
+            raise subprocess.CalledProcessError(result, ["resemble-enhance", *args])
+    finally:
+        sys.argv = saved_argv
+
+
 # resemble-enhance を使った追加のデノイズ（出力は必ずFLAC）
 def denoise_with_resemble(input_file, device: str | None = None):
     try:
@@ -119,8 +166,6 @@ def denoise_with_resemble(input_file, device: str | None = None):
             shutil.copy(src_path, temp_in_path)
 
             command = [
-                sys.executable,
-                str(Path(__file__).parent / "tools" / "run_resemble_enhance.py"),
                 str(temp_in_path),
                 str(temp_out_path),
                 "--denoise_only",
@@ -130,7 +175,7 @@ def denoise_with_resemble(input_file, device: str | None = None):
 
             logging.info("resemble-enhance によるデノイズを開始します")
             try:
-                subprocess.run(command, check=True, capture_output=True, text=True)
+                _run_resemble_enhance(command)
             except FileNotFoundError:
                 logging.error("'resemble-enhance' コマンドが見つかりません。'pip install resemble-enhance' でインストールし、PATHに含めてください。")
                 raise
