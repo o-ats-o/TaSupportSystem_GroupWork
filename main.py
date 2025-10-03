@@ -36,7 +36,7 @@ FORMAT = pyaudio.paInt16 # 音声のフォーマット
 CHANNELS = 1             # モノラル
 RATE = 44100             # サンプルレート
 CHUNK = 1024             # データの読み込みサイズ
-RECORD_SECONDS = 40  # 録音時間
+RECORD_SECONDS = 299.8  # 録音時間
 
 # バターワースフィルタ
 def butter_bandpass(lowcut, highcut, fs, order=5):
