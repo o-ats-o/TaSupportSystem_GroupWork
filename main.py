@@ -38,7 +38,7 @@ FORMAT = pyaudio.paInt16 # 音声のフォーマット
 CHANNELS = 1             # モノラル
 RATE = 44100             # サンプルレート
 CHUNK = 1024             # データの読み込みサイズ
-RECORD_SECONDS = 299.8  # 録音時間
+RECORD_SECONDS = 40  # 録音時間
 
 # バターワースフィルタ
 def butter_bandpass(lowcut, highcut, fs, order=5):
@@ -85,13 +85,13 @@ def _convert_to_flac(input_path: str) -> tuple[str, str]:
         return str(src), "audio/wav"
 
 
-# session_id 生成（GROUP_IDを含める・安全な文字に正規化）
+# session_id 生成（GROUP_ID + ホスト名 + 日付（Asia/Tokyo））
 def generate_session_id(group_id: str) -> str:
     safe_group = re.sub(r"[^A-Za-z0-9_-]", "-", str(group_id))
     host = socket.gethostname()
     safe_host = re.sub(r"[^A-Za-z0-9_-]", "-", host)
-    epoch = int(time.time())
-    return f"{safe_group}-{safe_host}-{epoch}"
+    date_str = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y%m%d")
+    return f"{safe_group}-{safe_host}-{date_str}"
 
 # アップロード用の署名URLを取得
 def get_signed_upload_url(content_type: str):
@@ -215,7 +215,7 @@ def process_data(q):
             upload_url, object_key = get_signed_upload_url(CONTENT_TYPE)
             upload_to_r2(upload_url, FILE, CONTENT_TYPE)
 
-            # セッションID生成（GROUP_ID + ホスト名 + タイムスタンプ）
+            # セッションID生成（GROUP_ID + ホスト名 + 日付）
             session_id = generate_session_id(GROUP_ID)
             request_transcription(object_key, session_id, GROUP_ID)
 
