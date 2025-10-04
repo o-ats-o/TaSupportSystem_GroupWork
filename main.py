@@ -1,3 +1,4 @@
+import argparse
 import pyaudio
 import wave
 import sys
@@ -18,7 +19,7 @@ import tempfile
 from pathlib import Path
 import socket
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from os import fspath
 
@@ -62,6 +63,58 @@ except NameError:
 # 末尾スラッシュは除去して正規化
 if WORKER_API_BASE_URL.endswith('/'):
     WORKER_API_BASE_URL = WORKER_API_BASE_URL[:-1]
+
+def _resolve_start_at(target_str: str, tz: ZoneInfo) -> datetime:
+    """指定文字列から起動時刻(datetime)を決定する。"""
+    target_str = target_str.strip()
+    now = datetime.now(tz)
+
+    time_formats = ["%H:%M:%S", "%H:%M"]
+    datetime_formats = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"]
+
+    # 完全な日付指定
+    for fmt in datetime_formats:
+        try:
+            parsed = datetime.strptime(target_str, fmt)
+            target = parsed.replace(tzinfo=tz)
+            if target <= now:
+                raise ValueError(f"指定時刻 {target_str} は既に過去です")
+            return target
+        except ValueError:
+            continue
+
+    # 時刻のみ（今日）
+    for fmt in time_formats:
+        try:
+            parsed = datetime.strptime(target_str, fmt)
+            target = now.replace(hour=parsed.hour, minute=parsed.minute,
+                                 second=parsed.second, microsecond=0)
+            if target <= now:
+                target += timedelta(days=1)
+            return target
+        except ValueError:
+            continue
+
+    raise ValueError("start-at は 'HH:MM', 'HH:MM:SS', 'YYYY-MM-DD HH:MM', 'YYYY/MM/DD HH:MM' 形式で指定してください")
+
+
+def wait_until(start_at: str, tz: ZoneInfo = ZoneInfo("Asia/Tokyo")) -> None:
+    """指定時刻まで待機する。"""
+    target = _resolve_start_at(start_at, tz)
+    now = datetime.now(tz)
+    remaining = (target - now).total_seconds()
+    if remaining <= 0:
+        logging.info("指定時刻に既に到達しているため待機をスキップします")
+        return
+
+    logging.info(
+        "指定時刻 %s まで %.0f 秒待機します",
+        target.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        remaining
+    )
+
+    time.sleep(remaining)
+    logging.info("指定時刻に到達したため処理を開始します")
 
 def _convert_to_flac(input_path: str) -> tuple[str, str]:
     """ffmpegでFLACに変換し、(flac_path, content_type) を返す。
@@ -269,7 +322,10 @@ def move_file(FILE):
     shutil.move(source, destination_path)
     logging.info(f"ファイルを移動: {destination_path}")
 
-def main():
+def main(start_at: str | None = None):
+    if start_at:
+        wait_until(start_at)
+
     q = queue.Queue()
 
     # 録音スレッドを作成
@@ -293,4 +349,14 @@ def main():
         # record_threadはdaemonなので、メインスレッドが終了すれば自動的に終了する
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="TAサポート音声処理スクリプト")
+    parser.add_argument(
+        "--start-at",
+        help="Asia/Tokyo 時間での開始時刻。'HH:MM', 'HH:MM:SS', 'YYYY-MM-DD HH:MM', 'YYYY/MM/DD HH:MM' 形式。時間のみの場合は過去なら翌日に繰り延べ。"
+    )
+    args = parser.parse_args()
+    try:
+        main(start_at=args.start_at)
+    except ValueError as e:
+        logging.error(f"開始時刻の指定が不正です: {e}")
+        sys.exit(1)
